@@ -71,7 +71,7 @@ jobs:
           mirror: "http://mirrors.ocf.berkeley.edu/qt/"
           cached: ${{ steps.cache-qt.outputs.cache-hit }}
           setup-python: "false"
-          modules: "qtactiveqt qthttpserver"
+          modules: "qtactiveqt qthttpserver qtwebsockets"
 
       - name: Win-x64 - ${{ matrix.qt_version }} - Generate Dependencies and Build
         shell: bash

@@ -31,6 +31,10 @@ class SubmissionServer : public QObject {
 	UserStore *userStore() const { return userStore_.data(); }
 	QString contestDir() const { return contestDir_; }
 
+	// 当前下发给学生的题面及样例文件路径（statements/ 下的第一个文件，或旧的
+	// statement.pdf）；未设定时返回空串。
+	static QString findStatementFile(const QString &contestDir);
+
 	bool start(const QHostAddress &addr, quint16 port, QString *errorOut = nullptr);
 	void stop();
 	bool isRunning() const { return running_; }
@@ -68,7 +72,7 @@ class SubmissionServer : public QObject {
 	QHttpServerResponse handleApiSubmit(qint32 taskId, const QHttpServerRequest &req);
 	QHttpServerResponse handleApiUploadFolder(const QHttpServerRequest &req);
 	QHttpServerResponse handleApiUploadSource(qint32 taskId, const QHttpServerRequest &req);
-	QHttpServerResponse handleStatementPdf(const QHttpServerRequest &req);
+	QHttpServerResponse handleStatement(const QHttpServerRequest &req);
 
 	QString sessionUser(const QHttpServerRequest &req) const;
 	bool requireSession(const QHttpServerRequest &req, QString *user) const;

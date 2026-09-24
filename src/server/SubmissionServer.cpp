@@ -30,7 +30,8 @@
 
 namespace {
 constexpr auto kCookieName = "lemon_sid";
-constexpr auto kStatementName = "statement.pdf";
+constexpr auto kStatementDirName = "statements";
+constexpr auto kLegacyStatementName = "statement.pdf";
 constexpr auto kAuditLogName = "online_submissions.log";
 constexpr auto kConfigName = "online_config.json";
 
@@ -108,6 +109,19 @@ QString encodeRfc5987(const QString &name) {
 	return out;
 }
 
+// Content-Disposition 的 ASCII 回退文件名：非 ASCII 或特殊字符替换为下划线
+QString asciiFallbackName(const QString &name) {
+	QString out;
+	for (const QChar c : name) {
+		if (c.unicode() >= 0x20 && c.unicode() < 0x80 && c != QLatin1Char('"') &&
+		    c != QLatin1Char('\\'))
+			out.append(c);
+		else
+			out.append(QLatin1Char('_'));
+	}
+	return out.isEmpty() ? QStringLiteral("statement") : out;
+}
+
 // 单层目录名/文件名合法性：禁止路径分隔符、保留字符、"."、".."、Windows 保留名。
 bool isSafePathComponent(const QString &s) {
 	if (s.isEmpty() || s.size() > 128)
@@ -132,6 +146,20 @@ bool isSafePathComponent(const QString &s) {
 
 constexpr int kMaxFolderDepth = 8;
 } // namespace
+
+// 题面及样例只保留一个槽位：statements/ 下按文件名排序取第一个；
+// 老比赛没有该目录时回退到比赛目录下的 statement.pdf。
+QString SubmissionServer::findStatementFile(const QString &contestDir) {
+	if (contestDir.isEmpty())
+		return {};
+	const QDir stmtDir(QDir(contestDir).filePath(QLatin1String(kStatementDirName)));
+	const auto files =
+	    stmtDir.entryInfoList(QDir::Files | QDir::Readable, QDir::Name);
+	if (!files.isEmpty())
+		return files.first().absoluteFilePath();
+	const auto legacy = QDir(contestDir).filePath(QLatin1String(kLegacyStatementName));
+	return QFile::exists(legacy) ? legacy : QString{};
+}
 
 SubmissionServer::SubmissionServer(QObject *parent) : QObject(parent) {
 	userStore_ = new UserStore(this);
@@ -285,7 +313,7 @@ void SubmissionServer::setupRoutes() {
 	             });
 
 	http_->route("/statement", QHttpServerRequest::Method::Get,
-	             [this](const QHttpServerRequest &req) { return handleStatementPdf(req); });
+	             [this](const QHttpServerRequest &req) { return handleStatement(req); });
 
 	// static assets
 	http_->route("/assets/css/app.css", QHttpServerRequest::Method::Get,
@@ -437,7 +465,7 @@ QHttpServerResponse SubmissionServer::handleApiTasks(const QHttpServerRequest &r
 	root.insert("user", user);
 	root.insert("displayName",
 	            userStore_ ? userStore_->displayNameOf(user) : QString());
-	root.insert("hasStatement", QFile::exists(QDir(contestDir_).filePath(kStatementName)));
+	root.insert("hasStatement", !findStatementFile(contestDir_).isEmpty());
 	root.insert("tasks", arr);
 	root.insert("serverNow", QDateTime::currentDateTime().toString(Qt::ISODate));
 	root.insert("windowEnabled", windowEnabled_);
@@ -804,20 +832,27 @@ void SubmissionServer::triggerJudgeContestant(const QString &contestant) {
 	    Qt::QueuedConnection);
 }
 
-QHttpServerResponse SubmissionServer::handleStatementPdf(const QHttpServerRequest &req) {
+QHttpServerResponse SubmissionServer::handleStatement(const QHttpServerRequest &req) {
 	QString user;
 	if (!requireSession(req, &user))
 		return redirect("/login");
-	const auto path = QDir(contestDir_).filePath(kStatementName);
+	const auto path = findStatementFile(contestDir_);
+	if (path.isEmpty())
+		return QHttpServerResponse(QHttpServerResponder::StatusCode::NotFound);
 	QFile f(path);
-	if (!f.exists() || !f.open(QFile::ReadOnly))
+	if (!f.open(QFile::ReadOnly))
 		return QHttpServerResponse(QHttpServerResponder::StatusCode::NotFound);
 	const auto bytes = f.readAll();
-	QHttpServerResponse resp("application/pdf", bytes);
+	const auto name = QFileInfo(path).fileName();
+	const auto mime = QMimeDatabase().mimeTypeForFile(path, QMimeDatabase::MatchExtension);
+	// PDF 可直接在浏览器内预览，压缩包等其它形式一律作为附件下载
+	const bool inlineDisplay = mime.name() == QLatin1String("application/pdf");
+	QHttpServerResponse resp(mime.name().toUtf8(), bytes);
 	QHttpHeaders h = resp.headers();
 	h.append(QHttpHeaders::WellKnownHeader::ContentDisposition,
-	         QStringLiteral("inline; filename=\"statement.pdf\"; filename*=UTF-8''%1")
-	             .arg(encodeRfc5987(kStatementName)));
+	         QStringLiteral("%1; filename=\"%2\"; filename*=UTF-8''%3")
+	             .arg(inlineDisplay ? QStringLiteral("inline") : QStringLiteral("attachment"),
+	                  asciiFallbackName(name), encodeRfc5987(name)));
 	h.append(QHttpHeaders::WellKnownHeader::CacheControl, "private, max-age=60");
 	resp.setHeaders(h);
 	return resp;

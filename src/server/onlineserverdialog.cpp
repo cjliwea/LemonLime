@@ -213,8 +213,8 @@ QWidget *OnlineServerDialog::buildServerTab() {
 
 	layout->addWidget(listenBox);
 
-	// --- Statement PDF group
-	auto *pdfBox = new QGroupBox(tr("题面 PDF"), page);
+	// --- Statement & samples group（单槽位：题面 PDF 或样例压缩包/任意单文件）
+	auto *pdfBox = new QGroupBox(tr("题面及样例"), page);
 	auto *pdfLayout = new QVBoxLayout(pdfBox);
 	pdfLayout->setSpacing(8);
 
@@ -224,10 +224,10 @@ QWidget *OnlineServerDialog::buildServerTab() {
 	statementLabel_->setWordWrap(true);
 	statementLabel_->setStyleSheet(QStringLiteral("color: #475569;"));
 
-	setStatementBtn_ = new QPushButton(tr("设定..."), pdfBox);
+	setStatementBtn_ = new QPushButton(tr("选择文件..."), pdfBox);
 	clearStatementBtn_ = new QPushButton(tr("清除"), pdfBox);
-	connect(setStatementBtn_, &QPushButton::clicked, this, &OnlineServerDialog::onSetStatementPdf);
-	connect(clearStatementBtn_, &QPushButton::clicked, this, &OnlineServerDialog::onClearStatementPdf);
+	connect(setStatementBtn_, &QPushButton::clicked, this, &OnlineServerDialog::onSetStatement);
+	connect(clearStatementBtn_, &QPushButton::clicked, this, &OnlineServerDialog::onClearStatement);
 
 	auto *pdfRow = new QHBoxLayout();
 	pdfRow->addWidget(statementLabel_, 1);
@@ -235,7 +235,9 @@ QWidget *OnlineServerDialog::buildServerTab() {
 	pdfRow->addWidget(clearStatementBtn_);
 	pdfLayout->addLayout(pdfRow);
 	pdfLayout->addWidget(new QLabel(
-	    tr("提示：把题面 PDF 通过此处选择，会复制为比赛目录下的 statement.pdf。"), pdfBox));
+	    tr("提示：题面 PDF、大样例压缩包或任意单个文件均可在此下发，会原样提供给学生在"
+	       "“题面下载”处获取；重复选择会替换已下发的文件。"),
+	    pdfBox));
 	pdfLayout->itemAt(1)->widget()->setStyleSheet(QStringLiteral("color: #94A3B8;"));
 
 	layout->addWidget(pdfBox);
@@ -754,52 +756,79 @@ void OnlineServerDialog::refreshUsersTable() {
 	}
 }
 
-void OnlineServerDialog::onSetStatementPdf() {
+void OnlineServerDialog::onSetStatement() {
 	if (contestDir_.isEmpty()) {
 		QMessageBox::warning(this, tr("提示"), tr("请先打开一场比赛。"));
 		return;
 	}
-	const auto src = QFileDialog::getOpenFileName(this, tr("选择题面 PDF"),
-	                                              QString(), tr("PDF 文件 (*.pdf)"));
+	const auto src = QFileDialog::getOpenFileName(
+	    this, tr("选择题面及样例"), QString(),
+	    tr("题面与样例 (*.pdf *.zip *.7z *.rar *.tar.gz);;所有文件 (*)"));
 	if (src.isEmpty())
 		return;
-	const auto dst = QDir(contestDir_).filePath(QStringLiteral("statement.pdf"));
-	if (QFileInfo(src).canonicalFilePath() == QFileInfo(dst).canonicalFilePath()) {
-		appendLog(tr("题面 PDF 已是该文件，无需复制"));
+	const QFileInfo srcInfo(src);
+	QDir contestDir(contestDir_);
+	const QDir stmtDir(contestDir.filePath(QStringLiteral("statements")));
+	const auto dst = stmtDir.filePath(srcInfo.fileName());
+	if (srcInfo.canonicalFilePath() == QFileInfo(dst).canonicalFilePath()) {
+		appendLog(tr("题面及样例已是该文件，无需复制"));
 		refreshStatementHint();
 		return;
 	}
-	if (QFile::exists(dst)) {
-		if (QMessageBox::question(this, tr("确认"),
-		                          tr("比赛目录下已存在 statement.pdf，是否覆盖？")) !=
-		    QMessageBox::Yes)
-			return;
-		QFile::remove(dst);
+	// 单槽位：新选择的文件会替换当前下发的文件
+	const auto current = SubmissionServer::findStatementFile(contestDir_);
+	if (!current.isEmpty() &&
+	    QMessageBox::question(this, tr("确认"),
+	                          tr("已下发 %1，是否替换为 %2？")
+	                              .arg(QFileInfo(current).fileName(), srcInfo.fileName())) !=
+	        QMessageBox::Yes)
+		return;
+	if (!stmtDir.exists() && !contestDir.mkpath(QStringLiteral("statements"))) {
+		QMessageBox::critical(this, tr("错误"),
+		                      tr("无法创建目录：%1").arg(stmtDir.absolutePath()));
+		return;
 	}
+	// 先清掉旧的（statements/ 下的残留文件与旧版 statement.pdf），再放入新文件
+	const auto srcCanonical = srcInfo.canonicalFilePath();
+	for (const auto &fi : stmtDir.entryInfoList(QDir::Files)) {
+		if (!srcCanonical.isEmpty() && fi.canonicalFilePath() == srcCanonical)
+			continue; // 选中的就是该文件本身，别删了源文件
+		QFile::remove(fi.absoluteFilePath());
+	}
+	const auto legacy = contestDir.filePath(QStringLiteral("statement.pdf"));
+	if (QFile::exists(legacy))
+		QFile::remove(legacy);
 	if (!QFile::copy(src, dst)) {
 		QMessageBox::critical(this, tr("错误"), tr("复制失败：%1").arg(src));
 		return;
 	}
-	appendLog(tr("已设定题面 PDF：%1").arg(src));
+	appendLog(tr("已设定题面及样例：%1").arg(dst));
 	refreshStatementHint();
 }
 
-void OnlineServerDialog::onClearStatementPdf() {
+void OnlineServerDialog::onClearStatement() {
 	if (contestDir_.isEmpty())
 		return;
-	const auto p = QDir(contestDir_).filePath(QStringLiteral("statement.pdf"));
-	if (!QFile::exists(p)) {
-		appendLog(tr("当前没有题面 PDF，无需清除"));
+	const auto current = SubmissionServer::findStatementFile(contestDir_);
+	if (current.isEmpty()) {
+		appendLog(tr("当前没有题面及样例，无需清除"));
 		return;
 	}
 	if (QMessageBox::question(this, tr("确认"),
-	                          tr("是否删除 %1？").arg(p)) != QMessageBox::Yes)
+	                          tr("是否删除 %1？").arg(current)) != QMessageBox::Yes)
 		return;
-	if (!QFile::remove(p)) {
-		QMessageBox::critical(this, tr("错误"), tr("删除失败：%1").arg(p));
+	if (!QFile::remove(current)) {
+		QMessageBox::critical(this, tr("错误"), tr("删除失败：%1").arg(current));
 		return;
 	}
-	appendLog(tr("已清除题面 PDF"));
+	// 清理 statements/ 下的残留文件与旧版 statement.pdf
+	const QDir stmtDir(QDir(contestDir_).filePath(QStringLiteral("statements")));
+	for (const auto &fi : stmtDir.entryInfoList(QDir::Files))
+		QFile::remove(fi.absoluteFilePath());
+	const auto legacy = QDir(contestDir_).filePath(QStringLiteral("statement.pdf"));
+	if (QFile::exists(legacy))
+		QFile::remove(legacy);
+	appendLog(tr("已清除题面及样例"));
 	refreshStatementHint();
 }
 
@@ -858,13 +887,15 @@ void OnlineServerDialog::refreshStatementHint() {
 		if (clearStatementBtn_) clearStatementBtn_->setEnabled(false);
 		return;
 	}
-	const auto p = QDir(contestDir_).filePath(QStringLiteral("statement.pdf"));
-	const bool exists = QFile::exists(p);
-	if (exists)
-		statementLabel_->setText(tr("已找到：%1").arg(p));
-	else
+	const auto p = SubmissionServer::findStatementFile(contestDir_);
+	const bool exists = !p.isEmpty();
+	if (exists) {
+		const QFileInfo fi(p);
 		statementLabel_->setText(
-		    tr("未设定。点击右侧按钮选择 PDF 文件。"));
+		    tr("已设定：%1（%2 KB）").arg(p).arg(fi.size() / 1024.0, 0, 'f', 1));
+	} else {
+		statementLabel_->setText(tr("未设定。点击右侧按钮选择文件。"));
+	}
 	if (setStatementBtn_) setStatementBtn_->setEnabled(true);
 	if (clearStatementBtn_) clearStatementBtn_->setEnabled(exists);
 }

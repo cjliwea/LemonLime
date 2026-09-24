@@ -9,7 +9,8 @@
 ├── contest.cdf                 # LemonLime 既有
 ├── source/                     # 学生提交源码（自动生成）
 ├── data/                       # LemonLime 既有
-├── statement.pdf               # 可选：题面 PDF（合订本，单文件）
+├── statements/                 # 可选：题面及样例（单文件，PDF / 压缩包 / 任意文件）
+├── statement.pdf               # 旧版题面（仍兼容，statements/ 为空时回退使用）
 ├── online_users.json           # 自动生成：账号表（PBKDF2-SHA256）
 ├── online_submissions.log      # 自动生成：审计日志
 └── online_users_passwords.csv  # 批量生成账号时自动落盘的明文清单
@@ -36,7 +37,7 @@
 
 - 打开浏览器访问 `http://<老师机IP>:8080`
 - 输入账号密码登录
-- 看到题目列表 + （若存在）右上角"题面"PDF 下载按钮
+- 看到题目列表 + （若存在）右上角"题面下载"按钮
 - 点某题进入提交页：可粘贴/编写代码，点 `提交代码` 即可
 - 同一题多次提交，**以最后一次为准**（覆盖写入）
 - 浏览器关闭/刷新不会丢稿（草稿暂存于 localStorage）

@@ -39,8 +39,8 @@ class OnlineServerDialog : public QDialog {
 	void onExportCsv();
 	void onImportCsv();
 	void onSavePlaintextList();
-	void onSetStatementPdf();
-	void onClearStatementPdf();
+	void onSetStatement();
+	void onClearStatement();
 	void onApplyContestWindow();
 	void refreshUsersTable();
 	void refreshStatementHint();

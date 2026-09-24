@@ -86,3 +86,5 @@ int main(int argc, char *argv[]) {
 	w.welcome();
 	return app.exec();
 }
+
+// trigger rebuild

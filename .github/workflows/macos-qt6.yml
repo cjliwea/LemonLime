@@ -12,6 +12,10 @@ on:
       - "BUILD.md"
   release:
     types: [published]
+
+permissions:
+  contents: write
+
 jobs:
   build:
     name: Build

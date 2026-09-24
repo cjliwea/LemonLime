@@ -45,6 +45,27 @@
         </tbody>
       </table>
     </section>
+
+    <section class="card upload-card">
+      <div class="upload-head">
+        <h2 class="upload-title">整包上传选手文件夹</h2>
+        <p class="upload-sub muted small">
+          选择以准考证号命名的文件夹（内含各题目子文件夹），内容会原样写入本场考试的
+          <code>source/&lt;准考证号&gt;/</code>，不做改名或内容检查。
+        </p>
+      </div>
+
+      <div class="upload-row">
+        <input type="file" id="folderInput" class="hidden-input" webkitdirectory multiple />
+        <button class="btn btn-ghost" id="pickFolderBtn" type="button">选择文件夹…</button>
+        <span class="upload-picked muted small" id="pickedHint">尚未选择文件夹</span>
+        <span class="upload-picked-error" id="pickedError" hidden></span>
+        <span class="spacer"></span>
+        <button class="btn btn-primary" id="uploadBtn" type="button" disabled>上传</button>
+      </div>
+
+      <div class="upload-result" id="uploadResult" hidden></div>
+    </section>
   </main>
 
   <script src="/assets/js/app.js"></script>

@@ -41,12 +41,44 @@
 - 同一题多次提交，**以最后一次为准**（覆盖写入）
 - 浏览器关闭/刷新不会丢稿（草稿暂存于 localStorage）
 
+## 整包上传选手文件夹（CSP-J/S 场景）
+
+CSP-J/S 第二轮下发的是以准考证号命名的文件夹，内含各题目子文件夹与源码，例如：
+
+```
+BJ-0001/
+├── candy/candy.cpp
+├── game/game.cpp
+├── network/network.cpp
+└── transfer/transfer.cpp
+```
+
+题目列表页底部的 **「整包上传选手文件夹」** 支持一次选中该文件夹上传：
+
+- 浏览器用 `webkitdirectory` 读取整个目录树，逐个文件以 **原始字节（base64）** 上传，
+  **不转码、不改名、不校验文件名**——文件名是否正确属于评测内容，服务端不做判断
+- 服务端只做路径安全校验（禁 `..`、路径分隔符、Windows 保留名、层级越界），
+  然后原样写入 `<contest>/source/<准考证号>/…`
+- 顶层文件夹名即"选手名"：**与登录账号无关**，因此学生账号只需能登录即可，
+  落盘目录直接是准考证号，与官方成绩表天然对齐
+- 上传完成后按桌面端 `autoJudge` 开关决定是否自动整包评测（默认开）；
+  关闭时老师在桌面端执行"全部评测"
+- 限制：单次请求 ≤ 8 MB（base64 前约 6 MB），文件数 ≤ 512，层级 ≤ 8
+
+> **老师注意**：文件夹上传只是把文件放进 `source/`。要让 LemonLime 按
+> `准考证号/题目名/题目名.cpp` 的结构找到源码，需要在每道题的设置里勾选
+> **子文件夹检查**（对应 `Task::getSubFolderCheck()`），否则会按
+> `source/准考证号/题目名.cpp` 查找而找不到文件。
+
 ## 设计取舍
 
 - **HTTP only**：机房局域网，避免自签证书警告；如需 HTTPS 需引入 OpenSSL 静态依赖并改 `SubmissionServer::start` 用 `QSslServer`
 - **PBKDF2-SHA256 (100k iter)**：使用 Qt6 自带的 `QPasswordDigestor`，无第三方依赖；强度足以应对班级规模
 - **textarea + 行号编辑器**：MVP 选择，编辑体验已能应付"从 IDE 粘贴提交"的主流场景。后续若要换 CodeMirror 6，只需替换 `src/server/assets/js/editor.js` 中 `LemonEditor.mount` 的实现即可，HTML 接口不变
 - **不开放注册**：账号必须通过桌面端"批量生成"或"添加单个用户"创建；HTTP 服务端没有任何 `/register` 路由
+- **整包上传用 JSON + base64 而非 multipart**：`QHttpServer` 不提供 multipart 解析，
+  自己手写边界解析容易出错；文件以原始字节 base64 传输可彻底避开 GBK/UTF-8 转码问题
+  （机房 Dev-C++ 常见 GBK 源码），代价是体积膨胀约 33%
 
 ## 依赖
 

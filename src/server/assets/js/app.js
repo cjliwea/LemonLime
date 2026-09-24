@@ -1,6 +1,7 @@
 // LemonLime Online — page bootstrap & API client
 
 const MAX_SOURCE_BYTES = 64 * 1024;
+const MAX_UPLOAD_BYTES = 8 * 1024 * 1024;
 
 async function fetchTasks() {
   const r = await fetch('/api/tasks', { credentials: 'same-origin' });
@@ -77,6 +78,7 @@ function showToast(msg, isError) {
 }
 
 async function renderIndex() {
+  const uploadState = {};
   try {
     const data = await fetchTasks();
     if (!data) return;
@@ -86,7 +88,12 @@ async function renderIndex() {
       const s = document.getElementById('statementLink');
       if (s) s.hidden = false;
     }
-    renderCountdown(document.getElementById('countdown'), data);
+    renderCountdown(document.getElementById('countdown'), data, s => {
+      uploadState.outsideWindow = (s.state === 'pre' || s.state === 'ended');
+      uploadState.state = s.state;
+      if (uploadState.sync) uploadState.sync();
+    });
+    setupFolderUpload(uploadState);
     const tbody = document.getElementById('taskBody');
     tbody.innerHTML = '';
     if (!data.tasks.length) {
@@ -121,6 +128,155 @@ async function renderIndex() {
 function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, c =>
     ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+// ---- 整包上传 ----
+// 选中以准考证号命名的文件夹后，原样镜像到 <contest>/source/<准考证号>/：
+// 不重命名、不校验文件名（文件名是否符合题目要求属于评测内容）。
+
+function fmtBytes(n) {
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+  return (n / 1024 / 1024).toFixed(2) + ' MB';
+}
+
+async function fileToBase64(file) {
+  const buf = new Uint8Array(await file.arrayBuffer());
+  let bin = '';
+  const CHUNK = 0x8000;
+  for (let i = 0; i < buf.length; i += CHUNK)
+    bin += String.fromCharCode.apply(null, buf.subarray(i, i + CHUNK));
+  return btoa(bin);
+}
+
+function renderUploadResult(box, j) {
+  if (!box) return;
+  const files = j.files || [];
+  const failed = files.filter(f => !f.ok);
+  const judgeTag = j.willJudge
+    ? '<span class="tag-ok">已自动触发评测</span>'
+    : '<span class="tag-idle">未自动评测，请老师在桌面端执行「全部评测」</span>';
+  const parts = [
+    `<div class="upload-summary"><b>${escapeHtml(j.contestant)}</b> · 写入 ${j.written}/${j.total} 个文件 · ${fmtBytes(j.bytes)} ${judgeTag}</div>`,
+    '<ul class="file-list">',
+  ];
+  files.forEach(f => {
+    parts.push(
+      `<li class="file-item${f.ok ? '' : ' is-skip'}">` +
+        `<span class="file-path">${escapeHtml(f.target || f.path)}</span>` +
+        `<span class="muted small">${fmtBytes(f.size)}</span>` +
+        (f.ok ? '' : `<span class="file-msg">${escapeHtml(f.message || '未写入')}</span>`) +
+      '</li>');
+  });
+  parts.push('</ul>');
+  if (failed.length)
+    parts.push(`<p class="muted small">${failed.length} 个文件未写入，其余已成功。</p>`);
+  box.innerHTML = parts.join('');
+  box.hidden = false;
+}
+
+function setupFolderUpload(state) {
+  const input = document.getElementById('folderInput');
+  const pickBtn = document.getElementById('pickFolderBtn');
+  const uploadBtn = document.getElementById('uploadBtn');
+  const hint = document.getElementById('pickedHint');
+  const errorEl = document.getElementById('pickedError');
+  const resultBox = document.getElementById('uploadResult');
+  if (!input || !pickBtn || !uploadBtn) return;
+
+  let picked = null;
+
+  function setError(msg) {
+    if (!errorEl) return;
+    errorEl.textContent = msg || '';
+    errorEl.hidden = !msg;
+  }
+
+  // 按钮可用性由 countdown 钩子驱动
+  state.sync = function () {
+    const blocked = !!state.outsideWindow;
+    pickBtn.disabled = blocked;
+    uploadBtn.disabled = blocked || !picked;
+    if (blocked)
+      uploadBtn.textContent = state.state === 'pre' ? '比赛尚未开始' : '比赛已结束';
+    else if (!uploadBtn.dataset.busy)
+      uploadBtn.textContent = '上传';
+  };
+
+  pickBtn.addEventListener('click', () => input.click());
+
+  input.addEventListener('change', () => {
+    setError('');
+    if (resultBox) resultBox.hidden = true;
+    picked = null;
+    const files = Array.from(input.files || []);
+    if (!files.length) {
+      hint.textContent = '尚未选择文件夹';
+      state.sync();
+      return;
+    }
+    const rels = files.map(f => f.webkitRelativePath || '');
+    if (!rels[0]) {
+      hint.textContent = '尚未选择文件夹';
+      setError('当前浏览器不支持文件夹上传，请改用 Chrome / Edge。');
+      state.sync();
+      return;
+    }
+    const roots = new Set(rels.map(r => r.split('/')[0]));
+    if (roots.size !== 1) {
+      hint.textContent = '尚未选择文件夹';
+      setError('检测到多个顶层文件夹，请只选中你自己的准考证号文件夹。');
+      state.sync();
+      return;
+    }
+    const root = rels[0].split('/')[0];
+    const bytes = files.reduce((a, f) => a + f.size, 0);
+    picked = { root, files, bytes };
+    hint.textContent = `已选择 ${root} · ${files.length} 个文件 · ${fmtBytes(bytes)}`;
+    if (bytes > MAX_UPLOAD_BYTES * 0.7)
+      setError(`文件夹约 ${fmtBytes(bytes)}，超过上限 ${fmtBytes(MAX_UPLOAD_BYTES)}。`);
+    state.sync();
+  });
+
+  uploadBtn.addEventListener('click', async () => {
+    if (!picked || uploadBtn.disabled) return;
+    if (picked.bytes > MAX_UPLOAD_BYTES * 0.7) {
+      showToast('文件夹过大，未上传', true);
+      return;
+    }
+    uploadBtn.dataset.busy = '1';
+    uploadBtn.disabled = true;
+    uploadBtn.textContent = '上传中…';
+    try {
+      const payloadFiles = [];
+      for (const f of picked.files) {
+        const rel = f.webkitRelativePath || (picked.root + '/' + f.name);
+        payloadFiles.push({ path: rel, content: await fileToBase64(f) });
+      }
+      const body = JSON.stringify({ contestant: picked.root, files: payloadFiles });
+      if (body.length > MAX_UPLOAD_BYTES)
+        throw new Error('上传数据 ' + fmtBytes(body.length) +
+                        ' 超过上限 ' + fmtBytes(MAX_UPLOAD_BYTES));
+      const r = await fetch('/api/upload-folder', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+      });
+      if (r.status === 401) { location.href = '/login'; return; }
+      const j = await r.json();
+      if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+      renderUploadResult(resultBox, j);
+      showToast(`已写入 ${j.written}/${j.total} 个文件`);
+    } catch (e) {
+      showToast('上传失败：' + e.message, true);
+    } finally {
+      delete uploadBtn.dataset.busy;
+      state.sync();
+    }
+  });
+
+  state.sync();
 }
 
 async function renderSubmit() {

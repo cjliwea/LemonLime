@@ -14,6 +14,7 @@
 #include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QHttpHeaders>
 #include <QHttpServer>
 #include <QHttpServerRequest>
@@ -23,6 +24,7 @@
 #include <QJsonObject>
 #include <QMimeDatabase>
 #include <QSaveFile>
+#include <QStringList>
 #include <QTcpServer>
 #include <QUrlQuery>
 
@@ -94,6 +96,30 @@ QString encodeRfc5987(const QString &name) {
 	}
 	return out;
 }
+
+// 单层目录名/文件名合法性：禁止路径分隔符、保留字符、"."、".."、Windows 保留名。
+bool isSafePathComponent(const QString &s) {
+	if (s.isEmpty() || s.size() > 128)
+		return false;
+	if (s == QLatin1String(".") || s == QLatin1String(".."))
+		return false;
+	for (const QChar c : s) {
+		if (c.unicode() < 0x20 || QStringLiteral("\\/:*?\"<>|").contains(c))
+			return false;
+	}
+	if (s.endsWith(QLatin1Char('.')) || s.endsWith(QLatin1Char(' ')))
+		return false;
+	static const QStringList reserved = {
+	    QStringLiteral("CON"),  QStringLiteral("PRN"),  QStringLiteral("AUX"),  QStringLiteral("NUL"),
+	    QStringLiteral("COM1"), QStringLiteral("COM2"), QStringLiteral("COM3"), QStringLiteral("COM4"),
+	    QStringLiteral("COM5"), QStringLiteral("COM6"), QStringLiteral("COM7"), QStringLiteral("COM8"),
+	    QStringLiteral("COM9"), QStringLiteral("LPT1"), QStringLiteral("LPT2"), QStringLiteral("LPT3"),
+	    QStringLiteral("LPT4"), QStringLiteral("LPT5"), QStringLiteral("LPT6"), QStringLiteral("LPT7"),
+	    QStringLiteral("LPT8"), QStringLiteral("LPT9")};
+	return !reserved.contains(s.section(QLatin1Char('.'), 0, 0).toUpper());
+}
+
+constexpr int kMaxFolderDepth = 8;
 } // namespace
 
 SubmissionServer::SubmissionServer(QObject *parent) : QObject(parent) {
@@ -238,6 +264,9 @@ void SubmissionServer::setupRoutes() {
 	             [this](qint32 taskId, const QHttpServerRequest &req) {
 		             return handleApiSubmit(taskId, req);
 	             });
+
+	http_->route("/api/upload-folder", QHttpServerRequest::Method::Post,
+	             [this](const QHttpServerRequest &req) { return handleApiUploadFolder(req); });
 
 	http_->route("/statement", QHttpServerRequest::Method::Get,
 	             [this](const QHttpServerRequest &req) { return handleStatementPdf(req); });
@@ -485,6 +514,194 @@ QHttpServerResponse SubmissionServer::handleApiSubmit(qint32 taskId, const QHttp
 	    {"willJudge", willJudge},
 	};
 	return QHttpServerResponse("application/json", QJsonDocument(ok).toJson(QJsonDocument::Compact));
+}
+
+QHttpServerResponse SubmissionServer::handleApiUploadFolder(const QHttpServerRequest &req) {
+	QString loginUser;
+	if (!requireSession(req, &loginUser))
+		return jsonError(401, tr("Not authenticated"));
+	if (!contest_)
+		return jsonError(500, tr("No contest bound"));
+
+	if (windowEnabled_) {
+		const auto now = QDateTime::currentDateTime();
+		if (startTime_.isValid() && now < startTime_)
+			return jsonError(403, tr("比赛尚未开始"));
+		if (endTime_.isValid() && now > endTime_)
+			return jsonError(403, tr("比赛已结束"));
+	}
+
+	const auto body = req.body();
+	if (body.isEmpty())
+		return jsonError(400, tr("Empty body"));
+	if (body.size() > maxFolderBytes_)
+		return jsonError(413, tr("文件夹过大（上限 %1 MB）").arg(maxFolderBytes_ / (1024 * 1024)));
+
+	QJsonParseError err;
+	const auto doc = QJsonDocument::fromJson(body, &err);
+	if (err.error != QJsonParseError::NoError)
+		return jsonError(400, tr("Bad JSON: %1").arg(err.errorString()));
+	const auto obj = doc.object();
+
+	const auto contestant = obj.value("contestant").toString().trimmed();
+	if (!isSafePathComponent(contestant))
+		return jsonError(400, tr("选手文件夹名不合法"));
+
+	const auto files = obj.value("files").toArray();
+	if (files.isEmpty())
+		return jsonError(400, tr("文件列表为空"));
+	if (files.size() > maxFolderFiles_)
+		return jsonError(413, tr("文件数量过多（上限 %1 个）").arg(maxFolderFiles_));
+
+	QJsonArray results;
+	QString writeErr;
+	if (!writeContestantFolder(contestant, files, &results, &writeErr))
+		return jsonError(500, writeErr);
+
+	qint64 totalBytes = 0;
+	int written = 0;
+	for (const auto &r : results) {
+		const auto o = r.toObject();
+		totalBytes += static_cast<qint64>(o.value("size").toDouble());
+		if (o.value("ok").toBool())
+			++written;
+	}
+
+	appendFolderAuditLog(loginUser, contestant, written, totalBytes);
+	emit submissionReceived(contestant, tr("整包上传"), static_cast<int>(totalBytes));
+
+	bool willJudge = false;
+	if (autoJudge_ && written > 0) {
+		willJudge = true;
+		triggerJudgeContestant(contestant);
+	}
+
+	QJsonObject ok{
+	    {"ok", true},
+	    {"contestant", contestant},
+	    {"written", written},
+	    {"total", static_cast<int>(files.size())},
+	    {"bytes", static_cast<double>(totalBytes)},
+	    {"willJudge", willJudge},
+	    {"files", results},
+	    {"submittedAt", QDateTime::currentDateTime().toString(Qt::ISODate)},
+	};
+	return QHttpServerResponse("application/json", QJsonDocument(ok).toJson(QJsonDocument::Compact));
+}
+
+// 把选手文件夹按原样（含子目录）镜像到 <contestDir>/source/<contestant>/。
+// 只做路径安全校验，不检查文件名是否符合题目要求 —— 那属于评测内容。
+bool SubmissionServer::writeContestantFolder(const QString &contestant, const QJsonArray &files,
+                                             QJsonArray *resultsOut, QString *errOut) {
+	const QString root = QDir(contestDir_).filePath(QStringLiteral("source/%1").arg(contestant));
+	if (!QDir().mkpath(root)) {
+		if (errOut)
+			*errOut = tr("无法创建选手目录：%1").arg(root);
+		return false;
+	}
+	const QString rootAbs = QDir(root).absolutePath();
+
+	for (const auto &v : files) {
+		const auto o = v.toObject();
+		const auto rawPath = o.value("path").toString();
+		const auto bytes = QByteArray::fromBase64(o.value("content").toString().toLatin1());
+
+		QJsonObject res;
+		res.insert("path", rawPath);
+		res.insert("size", static_cast<double>(bytes.size()));
+
+		auto fail = [&res, resultsOut](const QString &msg) {
+			res.insert("ok", false);
+			res.insert("message", msg);
+			if (resultsOut)
+				resultsOut->append(res);
+		};
+
+		const auto rel = QDir::cleanPath(rawPath).replace(QLatin1Char('\\'), QLatin1Char('/'));
+		if (rel.isEmpty() || rel.startsWith(QLatin1String("../")) || rel == QLatin1String("..") ||
+		    QDir::isAbsolutePath(rel)) {
+			fail(tr("非法路径"));
+			continue;
+		}
+
+		auto segs = rel.split(QLatin1Char('/'), Qt::SkipEmptyParts);
+		// 客户端提交的路径形如 <contestant>/<题目>/<源文件>，去掉首层选手文件夹
+		if (!segs.isEmpty() && segs.first() == contestant)
+			segs.removeFirst();
+		if (segs.isEmpty() || segs.size() > kMaxFolderDepth) {
+			fail(tr("路径层级不合法"));
+			continue;
+		}
+		bool bad = false;
+		for (const auto &s : segs) {
+			if (!isSafePathComponent(s)) {
+				bad = true;
+				break;
+			}
+		}
+		if (bad) {
+			fail(tr("路径含非法字符"));
+			continue;
+		}
+
+		const QString outFile = QDir(rootAbs).filePath(segs.join(QLatin1Char('/')));
+		if (!outFile.startsWith(rootAbs + QLatin1Char('/'))) {
+			fail(tr("路径越界"));
+			continue;
+		}
+		QDir().mkpath(QFileInfo(outFile).absolutePath());
+
+		QSaveFile f(outFile);
+		if (!f.open(QFile::WriteOnly | QFile::Truncate)) {
+			fail(f.errorString());
+			continue;
+		}
+		if (f.write(bytes) != bytes.size() || !f.commit()) {
+			fail(f.errorString());
+			continue;
+		}
+
+		res.insert("ok", true);
+		res.insert("target", QStringLiteral("source/%1/%2").arg(contestant, segs.join(QLatin1Char('/'))));
+		if (resultsOut)
+			resultsOut->append(res);
+	}
+	return true;
+}
+
+void SubmissionServer::appendFolderAuditLog(const QString &loginUser, const QString &contestant,
+                                            int fileCount, qint64 bytes) {
+	QFile f(QDir(contestDir_).filePath(kAuditLogName));
+	if (!f.open(QFile::Append | QFile::Text))
+		return;
+	const auto line = QStringLiteral("%1\t%2\tfolder=%3\tfiles=%4\tbytes=%5\n")
+	                      .arg(QDateTime::currentDateTime().toString(Qt::ISODateWithMs))
+	                      .arg(loginUser)
+	                      .arg(contestant)
+	                      .arg(fileCount)
+	                      .arg(bytes);
+	f.write(line.toUtf8());
+}
+
+void SubmissionServer::triggerJudgeContestant(const QString &contestant) {
+	auto contestPtr = contest_.data();
+	if (!contestPtr)
+		return;
+	// 与单题提交一致：先让 HTTP 响应发出去，再刷新选手列表并整包评测
+	QMetaObject::invokeMethod(
+	    contestPtr,
+	    [contestPtr, contestant]() {
+		    contestPtr->refreshContestantList();
+		    QVector<int> allTasks;
+		    for (int i = 0; i < contestPtr->getTaskList().size(); ++i)
+			    allTasks.append(i);
+		    if (allTasks.isEmpty())
+			    return;
+		    QList<std::pair<QString, QVector<int>>> work;
+		    work.append({contestant, allTasks});
+		    contestPtr->judge(work);
+	    },
+	    Qt::QueuedConnection);
 }
 
 QHttpServerResponse SubmissionServer::handleStatementPdf(const QHttpServerRequest &req) {

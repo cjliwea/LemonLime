@@ -17,6 +17,7 @@ class QTcpServer;
 class Contest;
 class UserStore;
 class SessionManager;
+class QJsonArray;
 class QHttpServerRequest;
 class QHttpServerResponse;
 
@@ -65,6 +66,7 @@ class SubmissionServer : public QObject {
 	QHttpServerResponse handleSubmitPage(qint32 taskId, const QHttpServerRequest &req);
 	QHttpServerResponse handleApiTasks(const QHttpServerRequest &req);
 	QHttpServerResponse handleApiSubmit(qint32 taskId, const QHttpServerRequest &req);
+	QHttpServerResponse handleApiUploadFolder(const QHttpServerRequest &req);
 	QHttpServerResponse handleStatementPdf(const QHttpServerRequest &req);
 
 	QString sessionUser(const QHttpServerRequest &req) const;
@@ -76,6 +78,13 @@ class SubmissionServer : public QObject {
 	                     const QString &extension, QString *errOut);
 	void appendAuditLog(const QString &username, int taskIndex, qint64 bytes, const QString &sha256);
 
+	// 整包上传：把选手文件夹原样镜像到 <contestDir>/source/<contestant>/
+	bool writeContestantFolder(const QString &contestant, const QJsonArray &files,
+	                           QJsonArray *resultsOut, QString *errOut);
+	void appendFolderAuditLog(const QString &loginUser, const QString &contestant, int fileCount,
+	                          qint64 bytes);
+	void triggerJudgeContestant(const QString &contestant);
+
 	QHttpServer *http_ = nullptr;
 	QTcpServer *tcp_ = nullptr;
 	QPointer<Contest> contest_;
@@ -86,6 +95,8 @@ class SubmissionServer : public QObject {
 	quint16 boundPort_ = 0;
 	bool running_ = false;
 	int maxSourceBytes_ = 64 * 1024;
+	int maxFolderFiles_ = 512;
+	qint64 maxFolderBytes_ = 8 * 1024 * 1024;
 
 	bool windowEnabled_ = false;
 	QDateTime startTime_;

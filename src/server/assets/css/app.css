@@ -241,6 +241,46 @@ a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible
 }
 .editor-foot .spacer { flex: 1; }
 
+/* 整包上传 */
+.upload-card { margin-top: 20px; }
+.upload-head { margin-bottom: 14px; }
+.upload-title { font-size: 16px; font-weight: 600; margin: 0 0 4px; }
+.upload-sub { margin: 0; }
+.upload-sub code {
+  background: #F1F5F9; border-radius: 4px; padding: 1px 5px;
+  font-family: 'Consolas', 'Menlo', monospace; font-size: 12px;
+}
+.upload-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.upload-row .spacer { flex: 1; }
+.hidden-input { display: none; }
+.upload-picked { font-variant-numeric: tabular-nums; }
+.upload-picked-error { color: var(--danger); font-size: 13px; }
+.upload-result {
+  margin-top: 16px; border-top: 1px solid var(--border); padding-top: 12px;
+}
+.upload-summary { font-size: 14px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.tag-ok, .tag-idle {
+  font-size: 12px; border-radius: 999px; padding: 2px 10px;
+}
+.tag-ok { color: var(--success); background: #ECFDF5; }
+.tag-idle { color: var(--text-soft); background: #F1F5F9; }
+.file-list {
+  list-style: none; margin: 12px 0 0; padding: 0;
+  max-height: 260px; overflow: auto;
+  border: 1px solid var(--border); border-radius: var(--radius-sm);
+}
+.file-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 12px; font-size: 13px; border-top: 1px solid var(--border);
+}
+.file-item:first-child { border-top: none; }
+.file-item.is-skip { background: #FEF2F2; }
+.file-path {
+  flex: 1; font-family: 'Consolas', 'Menlo', monospace;
+  word-break: break-all;
+}
+.file-msg { color: var(--danger); font-size: 12px; }
+
 /* Toast */
 .toast {
   position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);

@@ -67,6 +67,7 @@ class SubmissionServer : public QObject {
 	QHttpServerResponse handleApiTasks(const QHttpServerRequest &req);
 	QHttpServerResponse handleApiSubmit(qint32 taskId, const QHttpServerRequest &req);
 	QHttpServerResponse handleApiUploadFolder(const QHttpServerRequest &req);
+	QHttpServerResponse handleApiUploadSource(qint32 taskId, const QHttpServerRequest &req);
 	QHttpServerResponse handleStatementPdf(const QHttpServerRequest &req);
 
 	QString sessionUser(const QHttpServerRequest &req) const;

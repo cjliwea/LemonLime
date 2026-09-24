@@ -81,6 +81,17 @@ QString extensionFor(const QString &lang) {
 	return QStringLiteral("cpp");
 }
 
+// 由上传的文件名推断源码扩展名；不支持的类型返回空串。
+QString extensionForFileName(const QString &name) {
+	const auto suffix = QFileInfo(name).suffix().toLower();
+	if (suffix == "cpp" || suffix == "cc" || suffix == "cxx" || suffix == "c++")
+		return QStringLiteral("cpp");
+	if (suffix == "c") return QStringLiteral("c");
+	if (suffix == "py") return QStringLiteral("py");
+	if (suffix == "pas" || suffix == "pp") return QStringLiteral("pas");
+	return QString();
+}
+
 QString encodeRfc5987(const QString &name) {
 	const auto utf8 = name.toUtf8();
 	QString out;
@@ -267,6 +278,11 @@ void SubmissionServer::setupRoutes() {
 
 	http_->route("/api/upload-folder", QHttpServerRequest::Method::Post,
 	             [this](const QHttpServerRequest &req) { return handleApiUploadFolder(req); });
+
+	http_->route("/api/upload-source/<arg>", QHttpServerRequest::Method::Post,
+	             [this](qint32 taskId, const QHttpServerRequest &req) {
+		             return handleApiUploadSource(taskId, req);
+	             });
 
 	http_->route("/statement", QHttpServerRequest::Method::Get,
 	             [this](const QHttpServerRequest &req) { return handleStatementPdf(req); });
@@ -509,6 +525,90 @@ QHttpServerResponse SubmissionServer::handleApiSubmit(qint32 taskId, const QHttp
 
 	QJsonObject ok{
 	    {"ok", true},
+	    {"size", source.size()},
+	    {"submittedAt", QDateTime::currentDateTime().toString(Qt::ISODate)},
+	    {"willJudge", willJudge},
+	};
+	return QHttpServerResponse("application/json", QJsonDocument(ok).toJson(QJsonDocument::Compact));
+}
+
+// 单题上传源码文件：把文件原始字节按该题的标准文件名写入 source/<用户名>/。
+// 原始字节直传，避免机房 GBK 源码被当成 UTF-8 转坏。
+QHttpServerResponse SubmissionServer::handleApiUploadSource(qint32 taskId,
+                                                            const QHttpServerRequest &req) {
+	QString user;
+	if (!requireSession(req, &user))
+		return jsonError(401, tr("Not authenticated"));
+	if (!contest_)
+		return jsonError(500, tr("No contest bound"));
+	if (taskId < 0 || taskId >= contest_->getTaskList().size())
+		return jsonError(404, tr("Unknown task"));
+
+	if (windowEnabled_) {
+		const auto now = QDateTime::currentDateTime();
+		if (startTime_.isValid() && now < startTime_)
+			return jsonError(403, tr("比赛尚未开始"));
+		if (endTime_.isValid() && now > endTime_)
+			return jsonError(403, tr("比赛已结束"));
+	}
+
+	const auto body = req.body();
+	if (body.isEmpty())
+		return jsonError(400, tr("Empty body"));
+	// base64 体积约为原始字节的 4/3，body 上限相应放宽，解码后再按源码上限校验
+	const qint64 bodyLimit = static_cast<qint64>(maxSourceBytes_) * 4 / 3 + 4096;
+	if (body.size() > bodyLimit)
+		return jsonError(413, tr("文件过大（上限 %1 KB）").arg(maxSourceBytes_ / 1024));
+
+	QJsonParseError err;
+	const auto doc = QJsonDocument::fromJson(body, &err);
+	if (err.error != QJsonParseError::NoError)
+		return jsonError(400, tr("Bad JSON: %1").arg(err.errorString()));
+	const auto obj = doc.object();
+
+	const auto name = obj.value("name").toString().trimmed();
+	if (!isSafePathComponent(name))
+		return jsonError(400, tr("文件名不合法"));
+	const auto extension = extensionForFileName(name);
+	if (extension.isEmpty())
+		return jsonError(400, tr("仅支持 .cpp / .cc / .cxx / .c / .pas / .py"));
+
+	const auto source = QByteArray::fromBase64(obj.value("content").toString().toLatin1());
+	if (source.isEmpty())
+		return jsonError(400, tr("文件内容为空"));
+	if (source.size() > maxSourceBytes_)
+		return jsonError(413, tr("文件过大（上限 %1 KB）").arg(maxSourceBytes_ / 1024));
+
+	QString writeErr;
+	if (!writeSubmission(user, taskId, source, extension, &writeErr))
+		return jsonError(500, writeErr);
+
+	const auto sha =
+	    QString::fromLatin1(QCryptographicHash::hash(source, QCryptographicHash::Sha256).toHex());
+	appendAuditLog(user, taskId, source.size(), sha);
+	emit submissionReceived(user, contest_->getTaskList().at(taskId)->getProblemTitle(),
+	                        source.size());
+
+	bool willJudge = false;
+	if (autoJudge_) {
+		willJudge = true;
+		auto contestPtr = contest_.data();
+		const QString u = user;
+		const int t = taskId;
+		QMetaObject::invokeMethod(
+		    contestPtr,
+		    [contestPtr, u, t]() {
+			    contestPtr->refreshContestantList();
+			    QList<std::pair<QString, QVector<int>>> work;
+			    work.append({u, QVector<int>{t}});
+			    contestPtr->judge(work);
+		    },
+		    Qt::QueuedConnection);
+	}
+
+	QJsonObject ok{
+	    {"ok", true},
+	    {"name", name},
 	    {"size", source.size()},
 	    {"submittedAt", QDateTime::currentDateTime().toString(Qt::ISODate)},
 	    {"willJudge", willJudge},

@@ -44,6 +44,8 @@
 
 OnlineServerDialog::OnlineServerDialog(QWidget *parent) : QDialog(parent) {
 	setWindowTitle(tr("在线提交服务"));
+	// QDialog 默认只有关闭按钮，补上最小化/最大化
+	setWindowFlags(windowFlags() | Qt::WindowMinMaxButtonsHint);
 	resize(880, 640);
 	server_ = new SubmissionServer(this);
 	connect(server_, &SubmissionServer::logMessage, this, &OnlineServerDialog::appendLog);

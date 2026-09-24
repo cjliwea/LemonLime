@@ -301,6 +301,14 @@ async function renderSubmit() {
       btn.disabled = true;
       btn.textContent = s.state === 'pre' ? '比赛尚未开始' : '比赛已结束';
     }
+    const ub = document.getElementById('uploadSrcBtn');
+    if (ub) {
+      ub.disabled = outsideWindow;
+      if (!ub.dataset.busy)
+        ub.textContent = outsideWindow
+          ? (s.state === 'pre' ? '比赛尚未开始' : '比赛已结束')
+          : '上传源码文件';
+    }
   });
   const task = data.tasks.find(t => t.id === taskId);
   if (!task) { location.href = '/'; return; }
@@ -383,6 +391,51 @@ async function renderSubmit() {
       btn.textContent = orig;
       refreshCount();
     }
+  }
+
+  // 上传源码文件：直接提交原始字节，不经过编辑器（避免 GBK 源码被当成 UTF-8 转坏）
+  const srcFileInput = document.getElementById('srcFileInput');
+  const uploadSrcBtn = document.getElementById('uploadSrcBtn');
+  if (srcFileInput && uploadSrcBtn) {
+    uploadSrcBtn.addEventListener('click', () => srcFileInput.click());
+    srcFileInput.addEventListener('change', async () => {
+      const f = srcFileInput.files && srcFileInput.files[0];
+      srcFileInput.value = '';
+      if (!f || uploadSrcBtn.dataset.busy) return;
+      if (outsideWindow) { showToast('当前不在比赛时间内', true); return; }
+      if (f.size > MAX_SOURCE_BYTES) {
+        showToast(`文件过大（上限 ${MAX_SOURCE_BYTES} 字节）`, true);
+        return;
+      }
+      if (submitCount >= 1 && !confirm(
+            '这是第 ' + (submitCount + 1) + ' 次提交此题，' +
+            '提交后将覆盖上一次代码（评测以最后一次为准）。确定继续？')) return;
+      uploadSrcBtn.dataset.busy = '1';
+      uploadSrcBtn.disabled = true;
+      const orig = uploadSrcBtn.textContent;
+      uploadSrcBtn.textContent = '上传中…';
+      try {
+        const r = await fetch('/api/upload-source/' + taskId, {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: f.name, content: await fileToBase64(f) }),
+        });
+        if (r.status === 401) { location.href = '/login'; return; }
+        const j = await r.json();
+        if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+        submitCount++;
+        document.getElementById('lastSubmitted').textContent =
+          '上次提交于 ' + fmtTime(j.submittedAt);
+        showToast(`已上传 ${j.name}（${fmtBytes(j.size)}）`);
+      } catch (e) {
+        showToast('上传失败：' + e.message, true);
+      } finally {
+        delete uploadSrcBtn.dataset.busy;
+        uploadSrcBtn.textContent = orig;
+        uploadSrcBtn.disabled = outsideWindow;
+      }
+    });
   }
 
   document.getElementById('submitBtn').addEventListener('click', doSubmit);

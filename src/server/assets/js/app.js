@@ -84,41 +84,69 @@ async function renderIndex() {
     if (!data) return;
     document.getElementById('user').textContent = data.displayName || data.user;
     document.getElementById('contestTitle').textContent = data.contestTitle || '(未命名比赛)';
+    // 横幅副标题：题数 · 满分 · 时间范围
+    const metaEl = document.getElementById('contestMeta');
+    if (metaEl) {
+      const total = data.tasks.reduce((a, t) => a + (t.totalScore || 0), 0);
+      const fmtHM = iso => {
+        const d = new Date(iso);
+        if (isNaN(d)) return '';
+        const pad = n => String(n).padStart(2, '0');
+        return pad(d.getHours()) + ':' + pad(d.getMinutes());
+      };
+      const range = (data.startTime && data.endTime)
+        ? ' · ' + fmtHM(data.startTime) + ' – ' + fmtHM(data.endTime) : '';
+      metaEl.textContent = `${data.tasks.length} 题 · 满分 ${total}${range}`;
+    }
     if (data.hasStatement) {
       const s = document.getElementById('statementLink');
       if (s) s.hidden = false;
     }
+    // 倒计时驱动：横幅大字 + 进度条 + 上传按钮可用性
+    const heroTimer = document.getElementById('heroTimer');
+    const bar = document.getElementById('countdownBar');
     renderCountdown(document.getElementById('countdown'), data, s => {
+      if (heroTimer) heroTimer.hidden = (s.state === 'disabled');
+      if (bar && data.startTime && data.endTime) {
+        const total = new Date(data.endTime) - new Date(data.startTime);
+        let frac = s.state === 'running' && total > 0 ? (s.secs * 1000) / total : 0;
+        frac = Math.max(0, Math.min(1, frac));
+        bar.style.width = (frac * 100).toFixed(1) + '%';
+      }
       uploadState.outsideWindow = (s.state === 'pre' || s.state === 'ended');
       uploadState.state = s.state;
       if (uploadState.sync) uploadState.sync();
     });
     setupFolderUpload(uploadState);
-    const tbody = document.getElementById('taskBody');
-    tbody.innerHTML = '';
+    const body = document.getElementById('taskBody');
+    body.innerHTML = '';
     if (!data.tasks.length) {
-      tbody.innerHTML = '<tr><td colspan="6" class="muted">本场比赛尚无题目</td></tr>';
+      body.innerHTML = '<p class="muted">本场比赛尚无题目</p>';
       return;
     }
     data.tasks.forEach((t, idx) => {
-      const tr = document.createElement('tr');
-      tr.tabIndex = 0;
-      tr.setAttribute('role', 'button');
-      tr.setAttribute('aria-label', `进入题目 ${idx + 1} ${t.title}`);
-      tr.addEventListener('click', () => { location.href = '/submit/' + t.id; });
-      tr.addEventListener('keydown', e => {
-        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); tr.click(); }
+      const card = document.createElement('div');
+      card.className = 'tcard';
+      card.tabIndex = 0;
+      card.setAttribute('role', 'button');
+      card.setAttribute('aria-label', `进入题目 ${idx + 1} ${t.title}`);
+      card.addEventListener('click', () => { location.href = '/submit/' + t.id; });
+      card.addEventListener('keydown', e => {
+        if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); card.click(); }
       });
       const submitted = !!t.submittedAt;
-      tr.innerHTML = `
-        <td class="num-col">${idx + 1}</td>
-        <td>${escapeHtml(t.title)}</td>
-        <td class="num-col">${t.totalScore}</td>
-        <td><span class="status-pill ${submitted ? 'is-submitted' : ''}">${submitted ? '已提交' : '未提交'}</span></td>
-        <td class="muted">${submitted ? fmtTime(t.submittedAt) : '—'}</td>
-        <td class="action-col" aria-hidden="true">→</td>
+      card.innerHTML = `
+        <div class="tcard-no">T${idx + 1}</div>
+        <div class="tcard-info">
+          <div class="tcard-name">${escapeHtml(t.title)}</div>
+          <div class="tcard-meta">${escapeHtml(t.sourceFileName || '—')} · ${t.totalScore} 分</div>
+        </div>
+        <div class="tcard-right">
+          <span class="pill ${submitted ? 'ok' : 'no'}">${submitted ? '● 已提交' : '○ 未提交'}</span>
+          <div class="tcard-last">${submitted ? fmtTime(t.submittedAt) : '—'}</div>
+        </div>
       `;
-      tbody.appendChild(tr);
+      body.appendChild(card);
     });
   } catch (e) {
     showToast('加载失败：' + e.message, true);

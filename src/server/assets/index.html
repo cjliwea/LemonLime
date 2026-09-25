@@ -9,8 +9,7 @@
 <body>
   <header class="topbar">
     <div class="topbar-inner">
-      <a class="brand" href="/">LemonLime 在线提交</a>
-      <span id="countdown" class="countdown" hidden></span>
+      <a class="brand" href="/"><i class="brand-dot"></i>LemonLime 在线提交</a>
       <div class="topbar-right">
         <a id="statementLink" class="btn btn-ghost" href="/statement" target="_blank" rel="noopener" hidden>题面下载</a>
         <span class="user-chip">
@@ -24,26 +23,19 @@
   </header>
 
   <main class="container">
-    <section class="contest-banner">
-      <h1 id="contestTitle" class="contest-title">…</h1>
+    <section class="hero-card">
+      <div class="hero-info">
+        <h1 id="contestTitle" class="contest-title">…</h1>
+        <p class="hero-sub" id="contestMeta"></p>
+      </div>
+      <div class="hero-timer" id="heroTimer" hidden>
+        <div class="hero-time" id="countdown">…</div>
+        <div class="hero-bar"><i id="countdownBar"></i></div>
+      </div>
     </section>
 
-    <section class="card">
-      <table class="task-table" id="taskTable">
-        <thead>
-          <tr>
-            <th class="num-col">#</th>
-            <th>题目</th>
-            <th class="num-col">分值</th>
-            <th>状态</th>
-            <th>最后提交时间</th>
-            <th class="action-col" aria-label="操作"></th>
-          </tr>
-        </thead>
-        <tbody id="taskBody">
-          <tr><td colspan="6" class="muted">加载中…</td></tr>
-        </tbody>
-      </table>
+    <section class="tcards" id="taskBody" aria-label="题目列表">
+      <p class="muted">加载中…</p>
     </section>
 
     <section class="card upload-card">

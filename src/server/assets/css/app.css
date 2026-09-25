@@ -124,7 +124,7 @@ textarea:focus-visible, [role="button"]:focus-visible {
 
 /* ---------- 题目卡片 ---------- */
 .tcards {
-  display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px;
+  display: grid; grid-template-columns: 1fr; gap: 12px;
 }
 .tcard {
   display: flex; align-items: center; gap: 16px;
